@@ -1,34 +1,44 @@
 use crate::{
     common_ports::MOST_COMMON_PORTS,
     model::{Port, Subdomain},
+    Error, ScannerConfig,
 };
 use rayon::prelude::*;
+use std::net::TcpStream;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::{net::TcpStream, time::Duration};
 
-pub fn scan_ports(mut subdomain: Subdomain) -> Subdomain {
+pub fn scan_ports(mut subdomain: Subdomain, config: &ScannerConfig) -> Result<Subdomain, Error> {
     let socket_addresses: Vec<SocketAddr> = format!("{}:1024", subdomain.domain)
         .to_socket_addrs()
-        .expect("port scanner: Creating socket address")
+        .map_err(|e| Error::AddressError(e.to_string()))?
         .collect();
 
     if socket_addresses.is_empty() {
-        return subdomain;
+        return Ok(subdomain);
     }
 
     subdomain.open_ports = MOST_COMMON_PORTS
-        .into_par_iter()
-        .map(|port| scan_port(socket_addresses[0], *port))
-        .filter(|port| port.is_open) // filter closed ports
+        .iter()
+        .take(config.max_ports)
+        .par_bridge()
+        .map(|port| scan_port(socket_addresses[0], *port, config))
+        .filter_map(Result::ok)
+        .filter(|port| port.is_open)
         .collect();
-    subdomain
+
+    Ok(subdomain)
 }
 
-fn scan_port(mut socket_address: SocketAddr, port: u16) -> Port {
-    let timeout = Duration::from_secs(3);
+fn scan_port(
+    mut socket_address: SocketAddr,
+    port: u16,
+    config: &ScannerConfig,
+) -> Result<Port, Error> {
     socket_address.set_port(port);
 
-    let is_open = TcpStream::connect_timeout(&socket_address, timeout).is_ok();
+    let is_open = TcpStream::connect_timeout(&socket_address, config.port_timeout)
+        .map(|_| true)
+        .unwrap_or(false);
 
-    Port { port, is_open }
+    Ok(Port { port, is_open })
 }

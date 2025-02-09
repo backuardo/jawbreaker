@@ -6,6 +6,7 @@ authors = ["@backuardo"]
 
 [dependencies]
 anyhow = "1.0.95"
+num_cpus = "1.16.0"
 rayon = "1.10.0"
 reqwest = { version = "0.12.12", features = ["blocking", "json"] }
 serde = { version = "1.0.217", features = ["derive"] }
