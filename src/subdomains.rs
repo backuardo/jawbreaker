@@ -2,22 +2,27 @@ use crate::{
     model::{CrtShEntry, Subdomain},
     Error, ScannerConfig,
 };
-use reqwest::blocking::Client;
+use futures::stream::{self, StreamExt};
 use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use trust_dns_resolver::{
     config::{ResolverConfig, ResolverOpts},
-    Resolver,
+    TokioAsyncResolver,
 };
 
-pub fn enumerate(
-    http_client: &Client,
+pub async fn enumerate(
+    http_client: &reqwest::Client,
     target: &str,
     config: &ScannerConfig,
 ) -> Result<Vec<Subdomain>, Error> {
     let entries: Vec<CrtShEntry> = http_client
         .get(&format!("https://crt.sh/?q=%25.{}&output=json", target))
-        .send()?
+        .send()
+        .await?
         .json()
+        .await
         .map_err(|e| Error::Reqwest(e.to_string()))?;
 
     let mut subdomains: HashSet<String> = entries
@@ -29,31 +34,51 @@ pub fn enumerate(
                 .map(|subdomain| subdomain.trim().to_string())
                 .collect::<Vec<String>>()
         })
-        .filter(|subdomain: &String| subdomain != target)
-        .filter(|subdomain: &String| !subdomain.contains('*'))
+        .filter(|subdomain: &String| subdomain != target && !subdomain.contains('*'))
         .collect();
     subdomains.insert(target.to_string());
 
-    let subdomains: Vec<Subdomain> = subdomains
-        .into_iter()
+    let semaphore = Arc::new(Semaphore::new(config.concurrent_resolves));
+
+    let subdomains: Vec<Subdomain> = stream::iter(subdomains)
         .map(|domain| Subdomain {
             domain,
             open_ports: Vec::new(),
         })
-        .filter(|subdomain| resolves(subdomain, config))
-        .collect();
+        .map(|subdomain| {
+            let sem = Arc::clone(&semaphore);
+            async move {
+                let _permit = sem.acquire().await.unwrap();
+                (subdomain.clone(), resolves(&subdomain, config).await)
+            }
+        })
+        .buffer_unordered(config.concurrent_resolves)
+        .filter_map(|(subdomain, resolves)| async move {
+            if resolves {
+                Some(subdomain)
+            } else {
+                None
+            }
+        })
+        .collect()
+        .await;
 
     Ok(subdomains)
 }
 
-fn resolves(domain: &Subdomain, config: &ScannerConfig) -> bool {
+async fn resolves(domain: &Subdomain, config: &ScannerConfig) -> bool {
     let mut opts = ResolverOpts::default();
     opts.timeout = config.dns_timeout;
 
-    let dns_resolver = match Resolver::new(ResolverConfig::default(), opts) {
-        Ok(resolver) => resolver,
-        Err(_) => return false,
-    };
+    let dns_resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
 
-    dns_resolver.lookup_ip(domain.domain.as_str()).is_ok()
+    match timeout(
+        config.dns_timeout,
+        dns_resolver.lookup_ip(domain.domain.as_str()),
+    )
+    .await
+    {
+        Ok(Ok(_)) => true,
+        _ => false,
+    }
 }

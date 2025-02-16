@@ -1,18 +1,20 @@
-use rayon::prelude::*;
-use reqwest::{blocking::Client, redirect};
-use std::env;
-
-mod config;
-mod error;
+use crate::ports::scan_ports;
+use crate::subdomains::enumerate;
 pub use config::ScannerConfig;
 pub use error::Error;
+use futures::stream::{self, StreamExt};
+use model::Subdomain;
+use std::env;
+
+mod common_ports;
+mod config;
+mod error;
 mod model;
 mod ports;
 mod subdomains;
-use model::Subdomain;
-mod common_ports;
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 2 {
@@ -21,33 +23,29 @@ fn main() -> Result<(), Error> {
 
     let target = args[1].as_str();
     let config = ScannerConfig::default();
-    let http_client = Client::builder()
-        .redirect(redirect::Policy::limited(config.max_redirects))
+
+    let http_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(config.max_redirects))
         .timeout(config.http_timeout)
         .build()
         .map_err(|e| Error::Reqwest(e.to_string()))?;
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.thread_count)
-        .build()
-        .map_err(|e| Error::ThreadPool(e.to_string()))?;
 
-    pool.install(|| {
-        let scan_result: Vec<Subdomain> = subdomains::enumerate(&http_client, target, &config)?
-            .into_par_iter()
-            .map(|subdomain| ports::scan_ports(subdomain, &config))
-            .filter_map(|result| result.ok())
-            .collect();
+    let subdomains = enumerate(&http_client, target, &config).await?;
 
-        for subdomain in scan_result {
-            println!("{}:", &subdomain.domain);
-            for port in &subdomain.open_ports {
-                println!("    {}", port.port);
-            }
-            println!();
+    let scan_results = stream::iter(subdomains)
+        .map(|subdomain| scan_ports(subdomain, &config))
+        .buffer_unordered(config.concurrent_subdomain_scans)
+        .filter_map(|result| async move { result.ok() })
+        .collect::<Vec<Subdomain>>()
+        .await;
+
+    for subdomain in scan_results {
+        println!("{}:", &subdomain.domain);
+        for port in &subdomain.open_ports {
+            println!("    {}", port.port);
         }
-
-        Ok::<(), Error>(())
-    })?;
+        println!();
+    }
 
     Ok(())
 }

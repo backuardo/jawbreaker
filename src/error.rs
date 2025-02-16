@@ -9,11 +9,11 @@ pub enum Error {
     #[error("HTTP request failed: {0}")]
     Reqwest(String),
 
-    #[error("Thread pool creation failed: {0}")]
-    ThreadPool(String),
-
     #[error("Invalid address: {0}")]
     AddressError(String),
+
+    #[error("DNS error: {0}")]
+    Dns(String),
 }
 
 impl From<reqwest::Error> for Error {

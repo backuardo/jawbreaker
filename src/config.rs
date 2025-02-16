@@ -5,7 +5,10 @@ pub struct ScannerConfig {
     pub http_timeout: Duration,
     pub dns_timeout: Duration,
     pub port_timeout: Duration,
-    pub thread_count: usize,
+    pub scan_delay: Duration,
+    pub concurrent_subdomain_scans: usize,
+    pub concurrent_port_scans: usize,
+    pub concurrent_resolves: usize,
     pub max_redirects: usize,
     pub max_ports: usize,
 }
@@ -16,12 +19,16 @@ impl Default for ScannerConfig {
             http_timeout: Duration::from_secs(5),
             dns_timeout: Duration::from_secs(4),
             port_timeout: Duration::from_secs(3),
-            thread_count: std::cmp::min(256, num_cpus::get() * 4),
+            scan_delay: Duration::from_millis(10),
+            concurrent_subdomain_scans: 256,
+            concurrent_port_scans: 100,
+            concurrent_resolves: 50,
             max_redirects: 4,
             max_ports: 1000,
         }
     }
 }
+
 
 impl ScannerConfig {
     pub fn new() -> Self {
@@ -43,8 +50,23 @@ impl ScannerConfig {
         self
     }
 
-    pub fn with_thread_count(mut self, count: usize) -> Self {
-        self.thread_count = count;
+    pub fn with_scan_delay(mut self, delay: Duration) -> Self {
+        self.scan_delay = delay;
+        self
+    }
+
+    pub fn with_concurrent_subdomain_scans(mut self, count: usize) -> Self {
+        self.concurrent_subdomain_scans = count;
+        self
+    }
+
+    pub fn with_concurrent_port_scans(mut self, count: usize) -> Self {
+        self.concurrent_port_scans = count;
+        self
+    }
+
+    pub fn with_concurrent_resolves(mut self, count: usize) -> Self {
+        self.concurrent_resolves = count;
         self
     }
 
